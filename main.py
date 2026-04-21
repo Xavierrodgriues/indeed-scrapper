@@ -14,6 +14,7 @@ from pydantic import ValidationError
 
 from src.models import JobListing
 from src.scraper import IndeedScraper
+from src.db import upsert_jobs
 from src.utils import (
     atomic_csv_write,
     atomic_json_write,
@@ -97,9 +98,16 @@ async def run_pipeline(keyword: str, location: str, max_pages: int, data_dir: Pa
         serialized = [serialize_listing_payload(listing) for listing in new_listings]
         atomic_csv_write(csv_file, serialized, csv_fieldnames(serialized))
         atomic_json_write(json_file, serialized)
-        
+
         manifest = register_jobs(manifest, new_listings, csv_file)
         logger.info("Saved %d new listings to %s and %s", len(new_listings), csv_file, json_file)
+
+        # --- MongoDB upsert ---
+        try:
+            inserted, modified = await upsert_jobs(serialized)
+            logger.info("MongoDB: %d inserted, %d updated in indeed_job_details", inserted, modified)
+        except Exception as exc:
+            logger.warning("MongoDB upsert failed (files already saved): %s", exc)
     else:
         logger.info("No new listings found for %s in %s.", keyword, location)
 
