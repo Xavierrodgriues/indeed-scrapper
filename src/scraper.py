@@ -30,6 +30,7 @@ class IndeedScraper:
         results_per_page: int = 10,
         timeout_ms: int = 60_000,
         domain: str = "www.indeed.com",
+        days: int = 30,
     ) -> None:
         self.keyword = keyword.strip()
         self.location = location.strip()
@@ -37,6 +38,7 @@ class IndeedScraper:
         self.results_per_page = max(1, results_per_page)
         self.timeout_ms = max(10_000, timeout_ms)
         self.domain = domain
+        self.days = days
         self.session_id = f"indeed-{self.keyword}-{self.location}".replace(" ", "-").lower()
 
     def _build_proxy_url(self) -> str | None:
@@ -248,7 +250,7 @@ class IndeedScraper:
         async with AsyncWebCrawler(config=browser_config) as crawler:
             for page_number in range(self.max_pages):
                 start = page_number * self.results_per_page
-                url = encode_indeed_url(self.keyword, self.location, start, self.domain)
+                url = encode_indeed_url(self.keyword, self.location, start, self.domain, self.days)
                 logger.info("Scraping page %d at %s", page_number + 1, url)
 
                 try:
@@ -317,7 +319,17 @@ class IndeedScraper:
                         soup = BeautifulSoup(html, "html.parser")
                         jd_el = soup.select_one("#jobDescriptionText")
                         if jd_el:
-                            item["job_description"] = jd_el.get_text("\n", strip=True)
+                            jd_text = jd_el.get_text("\n", strip=True)
+                            item["job_description"] = jd_text
+                            
+                            import re
+                            exp_pattern = re.compile(
+                                r'(?:[Mm]inimum\s+(?:of\s+)?)?((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\+?\s*(?:to|-)?\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)?\+?)\s*years?(?:\'s)?\s*(?:of\s*)?(?:hands-on\s*)?(?:professional\s*)?(?:industry\s*)?(?:related\s*)?(?:relevant\s*)?experience',
+                                re.IGNORECASE
+                            )
+                            match = exp_pattern.search(jd_text)
+                            if match:
+                                item["experience"] = match.group(1).strip() + " years"
                         else:
                             logger.warning("Could not find #jobDescriptionText for %s", job_id)
                     else:

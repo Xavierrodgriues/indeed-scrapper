@@ -16,11 +16,12 @@ from src.models import JobListing
 from src.scraper import IndeedScraper
 from src.utils import (
     atomic_csv_write,
+    atomic_json_write,
     build_listing,
     csv_fieldnames,
-    daily_output_path,
     ensure_data_directories,
     filter_new_listings,
+    generate_run_paths,
     load_manifest,
     manifest_path,
     register_jobs,
@@ -45,6 +46,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--keyword", required=True, help="Search keyword, for example 'Software Engineer'.")
     parser.add_argument("--location", required=True, help="Job location, for example 'Remote'.")
     parser.add_argument("--max-pages", type=int, default=3, help="Maximum number of result pages to scrape.")
+    parser.add_argument("--days", type=int, default=30, help="Number of days to look back for jobs (e.g. 30 for 1 month).")
     parser.add_argument("--domain", default="www.indeed.com", help="Indeed domain to scrape (e.g. www.indeed.com).")
     parser.add_argument(
         "--data-dir",
@@ -73,14 +75,14 @@ def _build_validated_listings(
     return valid_listings
 
 
-async def run_pipeline(keyword: str, location: str, max_pages: int, data_dir: Path, domain: str) -> tuple[int, int, int]:
+async def run_pipeline(keyword: str, location: str, max_pages: int, data_dir: Path, domain: str, days: int) -> tuple[int, int, int]:
     """Run scrape -> validate -> dedupe -> persist."""
 
     logger = logging.getLogger(__name__)
     jobs_dir, _ = ensure_data_directories(data_dir)
     manifest_file = manifest_path(data_dir)
     manifest = load_manifest(manifest_file)
-    scraper = IndeedScraper(keyword=keyword, location=location, max_pages=max_pages, domain=domain)
+    scraper = IndeedScraper(keyword=keyword, location=location, max_pages=max_pages, domain=domain, days=days)
 
     scraped_at = datetime.now(UTC)
     raw_items = await scraper.scrape()
@@ -90,12 +92,14 @@ async def run_pipeline(keyword: str, location: str, max_pages: int, data_dir: Pa
     valid_listings = _build_validated_listings(raw_items, source_url=source_url, scraped_at=scraped_at)
     new_listings, skipped = filter_new_listings(manifest, valid_listings)
 
-    output_file = daily_output_path(jobs_dir, scraped_at, keyword, location)
+    csv_file, json_file = generate_run_paths(jobs_dir, scraped_at, keyword, location)
     if new_listings:
         serialized = [serialize_listing_payload(listing) for listing in new_listings]
-        atomic_csv_write(output_file, serialized, csv_fieldnames(serialized))
-        manifest = register_jobs(manifest, new_listings, output_file)
-        logger.info("Saved %d new listings to %s", len(new_listings), output_file)
+        atomic_csv_write(csv_file, serialized, csv_fieldnames(serialized))
+        atomic_json_write(json_file, serialized)
+        
+        manifest = register_jobs(manifest, new_listings, csv_file)
+        logger.info("Saved %d new listings to %s and %s", len(new_listings), csv_file, json_file)
     else:
         logger.info("No new listings found for %s in %s.", keyword, location)
 
@@ -119,6 +123,7 @@ def main() -> None:
             max_pages=args.max_pages,
             data_dir=args.data_dir,
             domain=args.domain,
+            days=args.days,
         )
     )
     print(f"Total found: {total_found} | New: {new_count} | Skipped: {skipped_count}")

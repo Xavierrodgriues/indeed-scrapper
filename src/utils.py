@@ -158,18 +158,23 @@ def atomic_csv_write(path: Path, rows: list[dict[str, Any]], fieldnames: list[st
                 logger.debug("Temporary file %s could not be removed after write.", temp_path)
 
 
-def daily_output_path(
+def generate_run_paths(
     jobs_dir: Path,
     scrape_date: datetime,
     keyword: str,
     location: str,
-) -> Path:
-    """Build a partitioned daily output path."""
+) -> tuple[Path, Path]:
+    """Build a timestamped dedicated directory and return CSV and JSON paths."""
 
-    date_dir = jobs_dir / scrape_date.date().isoformat()
-    date_dir.mkdir(parents=True, exist_ok=True)
-    file_name = f"{slugify(keyword)}_{slugify(location)}.csv"
-    return date_dir / file_name
+    stamp = scrape_date.strftime("%Y-%m-%d_%H-%M-%S")
+    slug = f"{slugify(keyword)}_{slugify(location)}"
+    dedicated_dir = jobs_dir / f"{stamp}_{slug}"
+    dedicated_dir.mkdir(parents=True, exist_ok=True)
+    
+    csv_file = dedicated_dir / f"{slug}.csv"
+    json_file = dedicated_dir / f"{slug}.json"
+    
+    return csv_file, json_file
 
 
 def slugify(value: str) -> str:
@@ -256,6 +261,7 @@ def csv_fieldnames(rows: list[dict[str, Any]]) -> list[str]:
         "job_url",
         "description",
         "job_description",
+        "experience",
         "source_url",
         "scraped_at",
         "metadata_json",
@@ -301,6 +307,7 @@ def build_listing(
         salary_raw=_normalize_optional_string(raw_item.get("salary_raw")),
         posted_at=parse_posted_at(raw_item.get("posted_at"), scraped_at),
         job_description=raw_item.get("job_description"),
+        experience=raw_item.get("experience"),
         metadata=metadata,
         checksum=build_checksum(description_text),
     )
@@ -331,11 +338,14 @@ def filter_new_listings(
     return new_listings, skipped
 
 
-def encode_indeed_url(keyword: str, location: str, start: int, domain: str = "www.indeed.com") -> str:
+def encode_indeed_url(keyword: str, location: str, start: int, domain: str = "www.indeed.com", days: int | None = 30) -> str:
     """Build the Indeed search URL for a specific page offset."""
 
-    return (
+    base_url = (
         f"https://{domain}/jobs?"
         f"q={quote_plus(keyword)}&l={quote_plus(location)}&start={start}&sort=date"
     )
+    if days is not None:
+        base_url += f"&fromage={days}"
+    return base_url
 

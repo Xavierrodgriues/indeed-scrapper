@@ -20,6 +20,7 @@ class JobListing(BaseModel):
     salary_raw: str | None = None
     posted_at: datetime
     job_description: str | None = None
+    experience: str | None = None
     metadata: dict[str, Any] = Field(default_factory=dict)
     checksum: str = Field(..., min_length=64, max_length=64)
 
