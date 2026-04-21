@@ -6,6 +6,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +18,97 @@ from dotenv import load_dotenv
 from .utils import encode_indeed_url
 
 logger = logging.getLogger(__name__)
+
+# Known specific technology/tool keywords that indicate a skill-level requirement,
+# not an overall role requirement.
+_TECH_TOOLS = re.compile(
+    r"\b(aws|azure|gcp|docker|kubernetes|k8s|terraform|ansible|jenkins|python|java|"
+    r"go|golang|node|react|angular|vue|sql|postgresql|mysql|mongodb|redis|kafka|"
+    r"spark|hadoop|linux|bash|powershell|git|github|gitlab|"
+    r"prometheus|grafana|splunk|dynatrace|datadog|jira|confluence|istio|helm|"
+    r"openshift|argocd|airflow|celery|fastapi|django|flask|spring|typescript|"
+    r"javascript|css|html|swift|kotlin|rust|scala|lambda|s3|ec2|ecs|eks|rds|"
+    r"cloudformation|puppet|chef|vault|consul|nginx|elasticsearch|kibana)\b",
+    re.IGNORECASE,
+)
+
+_EXP_PATTERN = re.compile(
+    r"(?:[Mm]inimum\s+(?:of\s+)?)?"
+    r"((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)"
+    r"\+?\s*(?:[-–to]+\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve))?\+?)"
+    r"\s*years?(?:'s)?\s*(?:of\s*)?(?:hands-on\s*)?(?:professional\s*)?"
+    r"(?:industry\s*)?(?:related\s*)?(?:relevant\s*)?experience",
+    re.IGNORECASE,
+)
+
+_WORD_TO_NUM = {
+    "one": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+    "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10,
+    "eleven": 11, "twelve": 12,
+}
+
+
+def _parse_years(num_str: str) -> float:
+    """Convert a matched year string like '3+', 'five', '2-4' to a numeric value."""
+    s = num_str.strip().lower().replace("+", "").strip()
+    # Handle ranges like "2-4" or "2 to 4" — take the lower bound
+    for sep in ("-", "–", "to"):
+        if sep in s:
+            s = s.split(sep)[0].strip()
+            break
+    return float(_WORD_TO_NUM.get(s, s) or 0)
+
+
+def _extract_role_experience(jd_text: str, keyword: str) -> str | None:
+    """
+    Extract the overall experience required for the role from a Job Description.
+
+    Priority order:
+      1. Lines that mention the EXACT search keyword (word-boundary match) AND no tools
+         → prefer the MINIMUM years (the base role requirement)
+      2. Lines with NO specific tool/tech names at all (general experience)
+         → prefer the minimum years
+      3. Fallback: any line → pick the minimum years overall
+    """
+    lines = jd_text.splitlines()
+
+    # Build whole-word patterns for each meaningful keyword word (length > 3)
+    kw_patterns = [
+        re.compile(r"\b" + re.escape(w) + r"\b", re.IGNORECASE)
+        for w in re.sub(r"[^a-z\s]", "", keyword.lower()).split()
+        if len(w) > 3
+    ]
+
+    tier1: list[tuple[float, str]] = []  # exact keyword match + no tool
+    tier2: list[tuple[float, str]] = []  # no tool at all
+    tier3: list[tuple[float, str]] = []  # everything else (tool-specific lines)
+
+    for line in lines:
+        for m in _EXP_PATTERN.finditer(line):
+            num_str = m.group(1).strip()
+            years_val = _parse_years(num_str)
+            label = num_str + (" year" if years_val == 1.0 else " years")
+
+            has_keyword = any(p.search(line) for p in kw_patterns)
+            has_tool = bool(_TECH_TOOLS.search(line))
+
+            if has_keyword and not has_tool:
+                tier1.append((years_val, label))
+            elif not has_tool:
+                tier2.append((years_val, label))
+            else:
+                tier3.append((years_val, label))
+
+    for tier in (tier1, tier2, tier3):
+        if tier:
+            # Within the best tier, prefer the MINIMUM — it represents the
+            # baseline requirement for the role, not a sub-skill requirement.
+            _, label = min(tier, key=lambda x: x[0])
+            return label
+
+    return None
+
+
 
 
 class IndeedScraper:
@@ -321,15 +413,7 @@ class IndeedScraper:
                         if jd_el:
                             jd_text = jd_el.get_text("\n", strip=True)
                             item["job_description"] = jd_text
-                            
-                            import re
-                            exp_pattern = re.compile(
-                                r'(?:[Mm]inimum\s+(?:of\s+)?)?((?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\+?\s*(?:to|-)?\s*(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)?\+?)\s*years?(?:\'s)?\s*(?:of\s*)?(?:hands-on\s*)?(?:professional\s*)?(?:industry\s*)?(?:related\s*)?(?:relevant\s*)?experience',
-                                re.IGNORECASE
-                            )
-                            match = exp_pattern.search(jd_text)
-                            if match:
-                                item["experience"] = match.group(1).strip() + " years"
+                            item["experience"] = _extract_role_experience(jd_text, self.keyword)
                         else:
                             logger.warning("Could not find #jobDescriptionText for %s", job_id)
                     else:
