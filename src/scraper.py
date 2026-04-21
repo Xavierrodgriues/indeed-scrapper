@@ -118,7 +118,7 @@ class IndeedScraper:
         self,
         keyword: str,
         location: str,
-        max_pages: int = 3,
+        max_pages: int = 10,
         results_per_page: int = 10,
         timeout_ms: int = 60_000,
         domain: str = "www.indeed.com",
